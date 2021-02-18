@@ -10,8 +10,6 @@ import QmlDownloader 1.0
 Item {
     id: settingsItem
     width: parent.width
-    property string installPath: ""
-    property string commandLine: ""
     Column {
         width: parent.width
         Pane {
@@ -30,13 +28,14 @@ Item {
                 padding: 16
             }
             FluidControls.Subheader {
-                text: updaterSettings.installPath
+                text: selectedInstallPath
             }
             FluidMaterial.ActionButton {
                 Material.elevation: 1
                 iconName: "file/folder"
                 onClicked: fileDialog.open()
                 enabled: downloader.state === QmlDownloader.IDLE
+                opacity: enabled ? 1 : 0.38
             }
             FluidControls.TitleLabel {
                 text: "Command Line:"
@@ -44,7 +43,7 @@ Item {
             }
             TextField {
                 text: updaterSettings.commandLine
-                onAccepted: updaterSettings.commandLine = this.text
+                onEditingFinished: updaterSettings.commandLine = this.text
             }
         }
     }
@@ -58,12 +57,14 @@ Item {
             if (Qt.platform.os === "windows") {
                 clipRegex = /^file:(\/\/\/)?/;
             }
-            var path = Qt.resolvedUrl(fileDialog.fileUrl + '/Unvanquished').toString();
+            var url = fileDialog.fileUrl.toString();
+            console.log("file URL from dialog: " + url);
+            var path = url + '/Unvanquished';
             path = path.replace(clipRegex, '').replace(/\/\/Unvanquished$/, '/Unvanquished');
             if (Qt.platform.os === "windows") {
                 path = path.replace(/\//g, '\\');
             }
-            updaterSettings.installPath = path;
+            selectedInstallPath = path;
         }
         selectFolder: true
     }

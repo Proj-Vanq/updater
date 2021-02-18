@@ -1,14 +1,37 @@
 #include "system.h"
+#include <unistd.h>
 #include "settings.h"
 #include "quazip/quazip/JlCompress.h"
 #include <QDir>
 #include <QDebug>
 #include <QCoreApplication>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
 
 namespace Sys {
+
+namespace {
+
+// Use QProcess::splitCommand in Qt 5.15+
+QStringList splitArgs(const QString& command) {
+    QRegularExpression argPart(R"regex((")""|"([^\"]*)"?|([^ ]))regex");
+    QRegularExpression arg("(" + argPart.pattern() + ")+");
+    QStringList list;
+    for (QRegularExpressionMatchIterator i = arg.globalMatch(command); i.hasNext(); ) {
+        QString str;
+        for (QRegularExpressionMatchIterator j = argPart.globalMatch(i.next().captured()); j.hasNext(); ) {
+            QRegularExpressionMatch match = j.next();
+            str += match.captured(match.lastCapturedIndex());
+        }
+        list.append(str);
+    }
+    return list;
+}
+
+} // namespace
+
 QString archiveName()
 {
     return "linux-amd64.zip";
@@ -61,28 +84,48 @@ QString defaultInstallPath()
     return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/unvanquished/base";
 }
 
-QString executableName()
+bool validateInstallPath(const QString& installPath)
 {
-    return "daemon";
+    // The default install location is inside the homepath and ends with /base (any user-selected
+    // path must end with /Unvanquished). Running as root with this location may result in an
+    // unusable install, if the homepath ends up not writable by the regular user.
+    return !(installPath.endsWith("/base") && getuid() == 0);
 }
 
-bool install()
+bool installShortcuts()
 {
     // Set up menu and protocol handler
     Settings settings;
-    QFile desktopFile(":resources/unvanquished.desktop");
-    if (!desktopFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return false;
+    QString desktopDir = QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
+    QFile::remove(desktopDir + "/unvanquished.desktop"); // updater v0.0.5 and before
+    for (QString desktopFileName :
+         {QString("net.unvanquished.Unvanquished.desktop"),
+          QString("net.unvanquished.UnvanquishedProtocolHandler.desktop")}) {
+        QFile desktopFile(":resources/" + desktopFileName);
+        if (!desktopFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            qDebug() << "missing resource" << desktopFileName;
+            return false;
+        }
+        QString desktopStr = QString(desktopFile.readAll().data())
+            .arg(settings.installPath());
+        QFile outputFile(desktopDir + "/" + desktopFileName);
+        if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+            qDebug() << "error opening" << desktopFileName;
+            return false;
+        }
+        if (outputFile.write(desktopStr.toUtf8().constData(), desktopStr.size())
+            != desktopStr.size()) {
+            qDebug() << "error writing" << desktopFileName;
+            return false;
+        }
     }
-    QString desktopStr = QString(desktopFile.readAll().data())
-        .arg(settings.installPath());
-    QFile outputFile(QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation) + "/unvanquished.desktop");
-    if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-        desktopFile.close();
-        return false;
-    }
-    outputFile.write(desktopStr.toUtf8().constData(), desktopStr.size());
-    outputFile.close();
+    int ret = QProcess::execute("xdg-mime",
+                                {QString("default"),
+                                 desktopDir + "/net.unvanquished.UnvanquishedProtocolHandler.desktop",
+                                 QString("x-scheme-handler/unv")});
+    qDebug() << "xdg-mime returned" << ret;
+    ret = QProcess::execute("update-desktop-database", {desktopDir});
+    qDebug() << "update-desktop-database returned" << ret;
 
     // install icon
     QString iconDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/icons/hicolor/128x128/apps/";
@@ -92,9 +135,27 @@ bool install()
             return false;
         }
     }
-    QFile::copy(":resources/unvanquished.png",
-                iconDir + "unvanquished.png");
-    return true;
+    QFile::remove(iconDir + "unvanquished.png");
+    return QFile::copy(":resources/unvanquished.png", iconDir + "unvanquished.png");
+}
+
+bool installUpdater(const QString& installPath) {
+    QFileInfo src(QCoreApplication::applicationFilePath());
+    QFileInfo dest(installPath + QDir::separator() + "updater");
+    if (src == dest) {
+        qDebug() << "Updater already in install location";
+        return true;
+    }
+    if (dest.exists()) {
+        qDebug() << "Deleting updater in install path";
+        if (!QFile::remove(dest.filePath())) {
+            return false;
+        }
+    }
+    qDebug() << "Copying updater from" << src.absoluteFilePath();
+    return QFile::copy(src.absoluteFilePath(), dest.filePath()) &&
+           QFile::setPermissions(dest.filePath(), static_cast<QFileDevice::Permissions>(0x775));
+           // Yes it is really supposed to be 0x775 not 0775
 }
 
 bool updateUpdater(const QString& updaterArchive)
@@ -104,7 +165,7 @@ bool updateUpdater(const QString& updaterArchive)
     QFile backupUpdater(backup);
     if (backupUpdater.exists()) {
         if (!backupUpdater.remove()) {
-            qDebug() << "Could not remove backup updater. Aboring autoupdate.";
+            qDebug() << "Could not remove backup updater. Aborting autoupdate.";
             return false;
         }
     }
@@ -170,6 +231,35 @@ std::string getCertStore()
 QSettings* makePersistentSettings(QObject* parent)
 {
     return new QSettings("unvanquished", "updater", parent);
+}
+
+QString getGameCommand(const QString& installPath)
+{
+    return QuoteQProcessCommandArgument(installPath + QDir::separator() + "daemon");
+}
+
+bool startGame(const QString& commandLine)
+{
+    Settings settings;
+    settings.sync(); // since normal shutdown will be skipped
+    std::vector<std::string> args;
+    for (const QString& arg : splitArgs(commandLine)) {
+        args.push_back(arg.toStdString());
+    }
+    if (args.empty()) return false;
+    std::vector<const char*> argv;
+    for (const std::string& arg : args) {
+        argv.push_back(arg.c_str());
+    }
+    argv.push_back(nullptr);
+    execvp(argv[0], const_cast<char* const*>(argv.data()));
+    qDebug() << "execvp failed: errno =" << errno;
+    return false;
+}
+
+ElevationResult RelaunchElevated(const QString& flags)
+{
+    return ElevationResult::UNNEEDED;
 }
 
 }  // namespace Sys

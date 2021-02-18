@@ -9,12 +9,7 @@
 
 namespace {
 static const QRegularExpression COMMAND_REGEX("%command%");
-static QString UPDATER_BASE_URL("http://github.com/Unvanquished/updater2/releases/download");
-
-QString QuoteQProcessCommandArgument(QString arg) {
-    arg.replace('"', "\"\"\"");
-    return '"' + arg + '"';
-}
+static QString UPDATER_BASE_URL("https://github.com/Unvanquished/updater/releases/download");
 }  // namespace
 
 QmlDownloader::QmlDownloader() : downloadSpeed_(0),
@@ -23,6 +18,8 @@ QmlDownloader::QmlDownloader() : downloadSpeed_(0),
         totalSize_(0),
         completedSize_(0),
         worker_(nullptr),
+        forceUpdaterUpdate_(false),
+        forceGameUpdate_(false),
         state_(IDLE) {}
 
 QmlDownloader::~QmlDownloader()
@@ -78,15 +75,28 @@ void QmlDownloader::onDownloadEvent(int event)
     switch (event) {
         case aria2::EVENT_ON_BT_DOWNLOAD_COMPLETE:
             if (state() != COMPLETED) {
+                // The game should be playable at this point - set the installed version
+                if (latestGameVersion_.isEmpty()) {
+                    latestGameVersion_ = "unknown";
+                }
+                qDebug() << "Setting installed version to" << latestGameVersion_;
+                settings_.setCurrentVersion(latestGameVersion_);
+
+                qDebug() << "installUpdater in" << settings_.installPath();
+                if (!Sys::installUpdater(settings_.installPath())) {
+                    emit fatalMessage("Error installing launcher");
+                    return;
+                }
                 qDebug() << "Calling Sys::install";
-                Sys::install();
-                settings_.setCurrentVersion(currentVersion_);
-                settings_.setInstallFinished(true);
+                if (Sys::installShortcuts()) {
+                    emit statusMessage("Up to date");
+                } else {
+                    emit statusMessage("Error installing shortcuts");
+                }
                 setState(COMPLETED);
                 setDownloadSpeed(0);
                 setUploadSpeed(0);
                 setCompletedSize(totalSize_);
-                emit statusMessage("Up to date");
                 stopAria();
             }
             break;
@@ -96,7 +106,7 @@ void QmlDownloader::onDownloadEvent(int event)
             break;
 
         case aria2::EVENT_ON_DOWNLOAD_ERROR:
-            emit statusMessage("Error received while downloading");
+            emit fatalMessage("Error received while downloading");
             break;
 
         case aria2::EVENT_ON_DOWNLOAD_PAUSE:
@@ -112,32 +122,43 @@ void QmlDownloader::onDownloadEvent(int event)
             break;
 
         case DownloadWorker::ERROR_EXTRACTING:
-            emit statusMessage("Error extracting update");
+            emit fatalMessage("Error extracting update");
             break;
     }
 }
 
-void QmlDownloader::startUpdate()
+void QmlDownloader::startUpdate(const QString& selectedInstallPath)
 {
-    settings_.setInstallFinished(false);
-    setState(DOWNLOADING);
-    QString installDir = settings_.installPath();
-    QDir dir(installDir);
+    qDebug() << "Selected install path:" << selectedInstallPath;
+    if (!Sys::validateInstallPath(selectedInstallPath)) {
+        emit fatalMessage("You are running as root, which may cause the installation to"
+                          " work incorrectly. Restart the program without using 'sudo'.");
+        return;
+    }
+
+    QDir dir(selectedInstallPath);
     if (!dir.exists()) {
         if (!dir.mkpath(dir.path())) {
-            emit statusMessage(dir.canonicalPath() + " does not exist and could not be created");
+            emit fatalMessage(dir.path() + " does not exist and could not be created");
             return;
         }
     }
-    if (!QFileInfo(installDir).isWritable()) {
-        emit statusMessage("Install dir not writable. Please select another");
+    if (!QFileInfo(selectedInstallPath).isWritable()) {
+        emit fatalMessage("Install dir not writable. Please select another");
         return;
     }
+    // Persist the install path only now that download has been initiated and we know the path is good
     emit statusMessage("Installing to " + dir.canonicalPath());
+    if (settings_.installPath() != selectedInstallPath) {
+        qDebug() << "Clearing installed version because path was changed";
+        settings_.setCurrentVersion("");
+    }
+    settings_.setInstallPath(selectedInstallPath);
 
-    worker_ = new DownloadWorker();
+    setState(DOWNLOADING);
+    worker_ = new DownloadWorker(ariaLogFilename_);
     worker_->setDownloadDirectory(dir.canonicalPath().toStdString());
-    worker_->addTorrent("http://cdn.unvanquished.net/current.torrent");
+    worker_->addTorrent("https://cdn.unvanquished.net/current.torrent");
     worker_->moveToThread(&thread_);
     connect(&thread_, SIGNAL(finished()), worker_, SLOT(deleteLater()));
     connect(worker_, SIGNAL(onDownloadEvent(int)), this, SLOT(onDownloadEvent(int)));
@@ -151,31 +172,28 @@ void QmlDownloader::startUpdate()
 
 void QmlDownloader::startGame()
 {
-    QString cmd = settings_.installPath() + QDir::separator() + Sys::executableName();
-    QString commandLine = settings_.commandLine();
-    commandLine.replace(COMMAND_REGEX, QuoteQProcessCommandArgument(cmd));
-
-    QProcess *process = new QProcess;
-    connect(process, SIGNAL(finished(int,QProcess::ExitStatus)), process, SLOT(deleteLater()));
-    connect(process, SIGNAL(finished(int,QProcess::ExitStatus)), QApplication::instance(), SLOT(quit()));
+    QString commandLine = settings_.commandLine().trimmed();
+    if (!commandLine.contains(COMMAND_REGEX)) {
+        commandLine = "%command% " + commandLine;
+    }
+    commandLine.replace(COMMAND_REGEX, Sys::getGameCommand(settings_.installPath()));
     qDebug() << "Starting game with command line:" << commandLine;
-    process->start(commandLine);
-    if (!process->waitForStarted(-1)) {
+    if (Sys::startGame(commandLine)) {
+        qDebug() << "Game started successfully";
+    } else {
         qDebug() << "Failed to start Unvanquished process.";
         QMessageBox errorMessageBox;
         errorMessageBox.setText("Failed to start Unvanquished process.");
         errorMessageBox.exec();
-        // If the process fails to start, it does not emit the 'finished' signal.
-        QApplication::instance()->quit();
     }
 }
 
-void QmlDownloader::toggleDownload()
+void QmlDownloader::toggleDownload(QString installPath)
 {
     qDebug() << "QmlDownloader::toggleDownload called";
     if (state() == COMPLETED) return;
     if (!worker_) {
-        startUpdate();
+        startUpdate(installPath);
         return;
     }
     worker_->toggle();
@@ -193,28 +211,71 @@ void QmlDownloader::stopAria()
     }
 }
 
+// Initiates an asynchronous request for the latest available versions.
 void QmlDownloader::checkForUpdate()
 {
-    if (networkManager_.isOnline()) {
-        connect(&fetcher_, SIGNAL(onCurrentVersions(QString, QString)), this, SLOT(onCurrentVersions(QString, QString)));
-        fetcher_.fetchCurrentVersion("http://dl.unvanquished.net/versions.json");
-        return;
-    }
-    else if (!settings_.installFinished()) {
-        emit updateNeeded(true);
-        return;
-    }
-    emit updateNeeded(false);
+    connect(&fetcher_, SIGNAL(onCurrentVersions(QString, QString)), this, SLOT(onCurrentVersions(QString, QString)));
+    fetcher_.fetchCurrentVersion("https://dl.unvanquished.net/versions.json");
 }
 
+// Initiate updater update to specified version
+void QmlDownloader::forceUpdaterUpdate(const QString& version)
+{
+    forceUpdaterUpdate_ = true;
+    latestUpdaterVersion_ = version;
+}
+
+// Launch the update window later even if the installed and current game versions match
+void QmlDownloader::forceGameUpdate()
+{
+    forceGameUpdate_ = true;
+}
+
+// Receives the results of the checkForUpdate request.
 void QmlDownloader::onCurrentVersions(QString updater, QString game)
 {
-    qDebug() << "Latest versions: updater =" << updater << "game =" << game;
-    if (!updater.isEmpty() && updater != QString(GIT_VERSION)) {
-        qDebug() << "Updater update to version" << updater << "required";
-        QString url = UPDATER_BASE_URL + "/" + updater + "/" + Sys::updaterArchiveName();
+    latestUpdaterVersion_ = updater;
+    latestGameVersion_ = game;
+}
+
+void QmlDownloader::launchGameIfInstalled()
+{
+    if (settings_.currentVersion().isEmpty()) {
+        qDebug() << "No game installed, exiting";
+        QCoreApplication::quit();
+    } else {
+        qDebug() << "Fall back to launching installed game";
+        emit updateNeeded(false);
+    }
+}
+
+// This runs after the splash screen has been displayed for the programmed amount of time (and the
+// user did not click the settings button). If the CurrentVersionFetcher didn't emit anything yet,
+// proceed as if the request for versions.json failed.
+void QmlDownloader::autoLaunchOrUpdate()
+{
+    qDebug() << "Previously-installed game version:" << settings_.currentVersion();
+    if (forceGameUpdate_) {
+        qDebug() << "Game update menu requested";
+        emit updateNeeded(true);
+    } else if (forceUpdaterUpdate_ ||
+               (!latestUpdaterVersion_.isEmpty() && latestUpdaterVersion_ != QString(GIT_VERSION))) {
+        qDebug() << "Updater update to version" << latestUpdaterVersion_ << "required";
+        if (!forceUpdaterUpdate_) {
+            switch (Sys::RelaunchElevated("--splashms 1 --update-updater-to " + latestUpdaterVersion_)) {
+                case Sys::ElevationResult::UNNEEDED:
+                    break;
+                case Sys::ElevationResult::RELAUNCHED:
+                    QCoreApplication::quit();
+                    return;
+                case Sys::ElevationResult::FAILED:
+                    launchGameIfInstalled();
+                    return;
+            }
+        }
+        QString url = UPDATER_BASE_URL + "/" + latestUpdaterVersion_ + "/" + Sys::updaterArchiveName();
         temp_dir_.reset(new QTemporaryDir());
-        worker_ = new DownloadWorker();
+        worker_ = new DownloadWorker(ariaLogFilename_);
         worker_->setDownloadDirectory(QDir(temp_dir_->path()).canonicalPath().toStdString());
         worker_->addUpdaterUri(url.toStdString());
         worker_->moveToThread(&thread_);
@@ -226,13 +287,30 @@ void QmlDownloader::onCurrentVersions(QString updater, QString game)
         connect(worker_, SIGNAL(completedSizeChanged(int)), this, SLOT(setCompletedSize(int)));
         connect(&thread_, SIGNAL(started()), worker_, SLOT(download()));
         thread_.start();
-    } else if (game.isEmpty() || settings_.currentVersion() != game) {
-        qDebug() << "Game update required. Installed version is" << settings_.currentVersion();
-        currentVersion_ = game;
+    } else if (settings_.currentVersion().isEmpty() ||
+               (!latestGameVersion_.isEmpty() && settings_.currentVersion() != latestGameVersion_)) {
+        qDebug() << "Game update required.";
+        switch (Sys::RelaunchElevated("--splashms 1 --update-game")) {
+            case Sys::ElevationResult::UNNEEDED:
+                break;
+            case Sys::ElevationResult::RELAUNCHED:
+                QCoreApplication::quit();
+                return;
+            case Sys::ElevationResult::FAILED:
+                launchGameIfInstalled();
+                return;
+        }
         emit updateNeeded(true);
     } else {
         emit updateNeeded(false);
     }
+}
+
+// Return value is whether the program should exit
+bool QmlDownloader::relaunchForSettings()
+{
+    qDebug() << "Possibly relaunching to open settings window";
+    return Sys::RelaunchElevated("--splashms 1 --update-game") != Sys::ElevationResult::UNNEEDED;
 }
 
 QmlDownloader::DownloadState QmlDownloader::state() const

@@ -26,7 +26,7 @@ mac {
 } linux {
   SOURCES += unix.cpp
 } win32 {
-  SOURCES += win.cpp
+  SOURCES += win.cpp ExecInExplorer.cpp
 }
 
 GIT_VERSION = $$system(git --git-dir $$PWD/.git --work-tree $$PWD describe --always --tags --abbrev=0)
@@ -43,6 +43,10 @@ win32:LIBS += -lcrypt32 -lsecur32 -lole32
 unix:LIBS += -lz "-L$$PWD/aria2/src/.libs" -laria2
 
 win32:RC_FILE = updater.rc
+
+# Plain Unvanquished icon, used for the app bundle and hence the Launchpad shortcut.
+# When the updater is running, the one with arrows is displayed as its icon.
+mac: ICON = resources/Unvanquished.icns
 
 # Additional import path used to resolve QML modules in Qt Creator's code model
 QML_IMPORT_PATH += fluid/src/imports/controls/qmldir
@@ -65,12 +69,3 @@ DEFINES += QT_DEPRECATED_WARNINGS
 qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
-
-DISTFILES += \
-    resources/unvanquished.desktop \
-    resources/unvanquished.png \
-    resources/background.png \
-    resources/header.png \
-    resources/logo.png \
-    resources/tyrant.png \
-    resources/disconnected_posts.json

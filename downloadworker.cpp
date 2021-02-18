@@ -2,11 +2,14 @@
 #include <sstream>
 #include "downloadworker.h"
 #include "quazip/quazip/JlCompress.h"
+#include "settings.h"
 #include "system.h"
 #include <QDebug>
 
-DownloadWorker::DownloadWorker(QObject *parent) : QObject(parent), downloadSpeed(0), uploadSpeed(0),
-totalSize(0), completedSize(0), paused(true), state(IDLE), running(false), renameRegex(".*unvanquished_([0-9\\.]+/)")
+DownloadWorker::DownloadWorker(QString ariaLogFilename, QObject *parent) :
+    QObject(parent), downloadSpeed(0), uploadSpeed(0),
+    totalSize(0), completedSize(0), paused(true), state(IDLE), running(false),
+    renameRegex(".*unvanquished_([0-9\\.]+/)"), downloader(ariaLogFilename.toStdString())
 {
     downloader.registerCallback(this);
 }
@@ -49,18 +52,18 @@ void DownloadWorker::onDownloadCallback(aria2::Session* session, aria2::Download
             } else if (state == DOWNLOADING_UPDATER) {
                 qDebug() << "Updater download complete";
                 aria2::DownloadHandle* handle = aria2::getDownloadHandle(session, gid);
-                qDebug() << handle->getNumFiles();
-                if (handle->getNumFiles() > 1) {
+                qDebug() << "Number of files in updater download:" << handle->getNumFiles();
+                if (handle->getNumFiles() != 1) {
                     return;
                 }
                 auto files = handle->getFiles();
-                qDebug() << files[0].path.c_str();
+                qDebug() << "Downloaded updater at" << files[0].path.c_str();
                 Sys::updateUpdater(QString(files[0].path.c_str()));
                 return;
             } else {
-                qDebug() << "Unvanquished download complete (?)";
-                event = aria2::EVENT_ON_BT_DOWNLOAD_COMPLETE;
-                if (!extractUpdate()) return;
+                // For a torrent, happens when aria2 is stopped
+                qDebug() << "final EVENT_ON_DOWNLOAD_COMPLETE";
+                return;
             }
             break;
 
@@ -157,6 +160,8 @@ void DownloadWorker::stop()
 
 bool DownloadWorker::extractUpdate()
 {
+    qDebug() << "Clearing installed version prior to extraction";
+    Settings().setCurrentVersion("");
     QString filename = Sys::archiveName();
     auto out = JlCompress::extractDir(downloadDir + "/" + filename, downloadDir);
     if (out.size() < 1) {

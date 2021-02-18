@@ -22,7 +22,7 @@ QString extractAppPath(const QString& path) {
         }
         if (path.isRoot()) {
             qDebug() << "Failed to find .app name.";
-            return "false""";
+            return "";
         }
         return path.absolutePath();
     }
@@ -41,17 +41,51 @@ QString defaultInstallPath()
     return QDir::homePath() +  "/Games/Unvanquished";
 }
 
-QString executableName()
+bool validateInstallPath(const QString&)
 {
-    return "Unvanquished.app";
+    // The default install location is not in the Unvanquished homepath, so the problem which
+    // can occur on Linux is not likely to arise.
+    return true;
 }
 
-bool install()
+bool installShortcuts()
 {
+    QDir applications(QDir::homePath() + "/Applications");
+    if (!applications.exists()) {
+        if (!applications.mkpath(".")) {
+            qDebug() << "can't create ~/Applications";
+            return false;
+        }
+    }
     Settings settings;
-    QFile::link(settings.installPath() + "/Unvanquished.app",
-	            QDir::homePath() + "/Applications/Unvanquished.app");
+    QString linkPath = applications.absoluteFilePath("Unvanquished.app");
+    QFile::remove(linkPath);
+    if (!QFile::link(settings.installPath() + QDir::separator() + "updater.app", linkPath)) {
+        qDebug() << "failed to create Applications link";
+        return false;
+    }
     return true;
+}
+
+bool installUpdater(const QString& installPath) {
+    QString currentAppPath = extractAppPath(QCoreApplication::applicationFilePath());
+    if (currentAppPath.isEmpty()) return false;
+    QDir src(currentAppPath);
+    QDir dest(installPath + QDir::separator() + "updater.app");
+    if (src == dest) {
+        qDebug() << "Updater already in install location";
+        return true;
+    }
+    if (dest.exists()) {
+        qDebug() << "Deleting updater in install path";
+        if (!dest.removeRecursively()) {
+            return false;
+        }
+    }
+    qDebug() << "Copying updater from" << src.absolutePath();
+    int ret = QProcess::execute("/bin/cp", {QString("-R"), src.path(), dest.path()});
+    qDebug() << "cp returned" << ret;
+    return ret == 0;
 }
 
 bool updateUpdater(const QString& updaterArchive)
@@ -62,14 +96,14 @@ bool updateUpdater(const QString& updaterArchive)
     QDir backupUpdater(currentAppPath +  ".bak");
     if (backupUpdater.exists()) {
         if (!backupUpdater.removeRecursively()) {
-            qDebug() << "Error deleting old update. pls update manually";
+            qDebug() << "Error deleting old update. Please update manually";
             return false;
         }
     }
     QDir extractDir = backupUpdater;
     extractDir.cdUp();
     if (!extractDir.rename(currentApp.dirName(), backupUpdater.dirName())) {
-        qDebug() << "Could not rename bkup. pls manually update.";
+        qDebug() << "Could not rename backup. Please manually update.";
         return false;
     }
     QStringList extractedFiles = JlCompress::extractDir(updaterArchive, extractDir.absolutePath());
@@ -97,7 +131,7 @@ bool updateUpdater(const QString& updaterArchive)
     QDir extractedApp(extractedAppPath);
     if (extractedApp.dirName() != currentApp.dirName()) {
         if (!extractDir.rename(extractedApp.dirName(), currentApp.dirName())) {
-            qDebug() << "Could not rename update. pls manually update.";
+            qDebug() << "Could not rename update. Please manually update.";
             return false;
         }
     }
@@ -121,10 +155,35 @@ std::string getCertStore()
     return "";  // Not used on OSX.
 }
 
-// Settings are, IIUC, stored in ~/Library/Preferences/net.unvanquished.Unvanquished Updater.plist
+// Settings are stored in "~/Library/Preferences/net.unvanquished.Unvanquished Updater.plist"
+// After deleting/changing the file, you must run `sudo killall cfprefsd` for it to take effect
 QSettings* makePersistentSettings(QObject* parent)
 {
     return new QSettings(parent);
+}
+
+QString getGameCommand(const QString& installPath)
+{
+    return "/usr/bin/open " +
+           QuoteQProcessCommandArgument(installPath + QDir::separator() + "Unvanquished.app") +
+           " --args";
+}
+
+bool startGame(const QString& commandLine)
+{
+    if (commandLine.startsWith("/usr/bin/open ")) {
+        // Get the return code of `open` to see whether the app was started successfully
+        int ret = QProcess::execute(commandLine);
+        qDebug() << "/usr/bin/open returned" << ret;
+        return ret == 0;
+    } else {
+        return QProcess::startDetached(commandLine);
+    }
+}
+
+ElevationResult RelaunchElevated(const QString& flags)
+{
+    return ElevationResult::UNNEEDED;
 }
 
 }  // namespace Sys

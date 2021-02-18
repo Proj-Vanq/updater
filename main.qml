@@ -3,6 +3,7 @@ import QtQuick.Controls 2.0
 import QtQuick.Controls.Material 2.0
 import Fluid.Controls 1.0 as FluidControls
 import Fluid.Material 1.0 as FluidMaterial
+import "utils.js" as Utils
 
 ApplicationWindow {
     id: root
@@ -14,12 +15,20 @@ ApplicationWindow {
     Material.primary: Material.DarkBlue
     Material.accent: Material.Violet
 
+    property string selectedInstallPath: updaterSettings.installPath
+
     Connections {
         target: downloader
         ignoreUnknownSignals: true
         onStatusMessage: {
-            console.log(message);
+            console.log("Download status: " + message);
             infoBar.open(message);
+        }
+        onFatalMessage: {
+            console.log("Installation failed: " + message);
+            errorPopup.errorDetail = message;
+            errorPopup.open();
+            root.alert(0);
         }
     }
 
@@ -115,5 +124,10 @@ ApplicationWindow {
         onClicked: {
             this.hide();
         }
+    }
+
+    UpdateFailed {
+        id: errorPopup
+        failedOperation: 'Game installation'
     }
 }

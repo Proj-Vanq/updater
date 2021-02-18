@@ -160,11 +160,11 @@ Item {
 
         onClicked: {
             if (downloader.state === QmlDownloader.COMPLETED) {
-                root.hide();
+                root.close();
                 downloader.startGame();
                 return;
             }
-            downloader.toggleDownload();
+            downloader.toggleDownload(selectedInstallPath);
         }
     }
 
@@ -184,6 +184,7 @@ Item {
                 downloadAction.iconName = "av/play_arrow";
                 instruction.visible = true;
                 instruction.text = "Press the button to play the game";
+                root.alert(0);
             }
         }
     }

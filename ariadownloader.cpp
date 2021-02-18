@@ -13,7 +13,7 @@ int downloadEventCallback(aria2::Session* session, aria2::DownloadEvent event,
     return 1;
 }
 
-AriaDownloader::AriaDownloader() : callback_(nullptr)
+AriaDownloader::AriaDownloader(const std::string& ariaLogFilename) : callback_(nullptr)
 {
     aria2::libraryInit();
     aria2::SessionConfig config;
@@ -28,9 +28,13 @@ AriaDownloader::AriaDownloader() : callback_(nullptr)
     options.push_back({ "follow-torrent", "mem" });
     options.push_back({ "quiet", "false" });
 
+    if (!ariaLogFilename.empty()) {
+        options.push_back({ "log", ariaLogFilename });
+    }
+
     std::string certsPath = Sys::getCertStore();
     if (!certsPath.empty()) {
-        options.push_back({ "ca-certificates", certsPath });
+        options.push_back({ "ca-certificate", certsPath });
     }
     session_ = aria2::sessionNew(options, config);
 }

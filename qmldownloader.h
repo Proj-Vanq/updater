@@ -4,7 +4,6 @@
 #include <QObject>
 #include <QRegularExpression>
 #include <QSettings>
-#include <QNetworkConfigurationManager>
 #include <QThread>
 #include <QUrl>
 #include <QTemporaryDir>
@@ -44,6 +43,11 @@ public:
     int totalSize() const;
     int completedSize() const;
     DownloadState state() const;
+    void checkForUpdate();
+    void forceUpdaterUpdate(const QString& version);
+    void forceGameUpdate();
+
+    QString ariaLogFilename_;
 
 signals:
     void downloadSpeedChanged(int downloadSpeed);
@@ -52,6 +56,7 @@ signals:
     void totalSizeChanged(int totalSize);
     void completedSizeChanged(int completedSize);
     void statusMessage(QString message);
+    void fatalMessage(QString message);
     void updateNeeded(bool updateNeeded);
     void stateChanged(DownloadState state);
 
@@ -63,15 +68,17 @@ public slots:
     void onDownloadEvent(int event);
     void onCurrentVersions(QString updater, QString game);
 
-    Q_INVOKABLE void startUpdate();
-    Q_INVOKABLE void toggleDownload();
+    Q_INVOKABLE void toggleDownload(QString installPath);
     Q_INVOKABLE void startGame();
-    Q_INVOKABLE void checkForUpdate();
+    Q_INVOKABLE void autoLaunchOrUpdate();
+    Q_INVOKABLE bool relaunchForSettings();
 
 private:
     void stopAria();
     void setState(DownloadState state);
     void startDownload(const QUrl& url, const QDir& destination);
+    void startUpdate(const QString& selectedInstallPath);
+    void launchGameIfInstalled();
 
     QThread thread_;
     int downloadSpeed_;
@@ -84,8 +91,10 @@ private:
     DownloadWorker* worker_;
     DownloadTimeCalculator downloadTime_;
     Settings settings_;
-    QNetworkConfigurationManager networkManager_;
-    QString currentVersion_;
+    bool forceUpdaterUpdate_;
+    bool forceGameUpdate_;
+    QString latestGameVersion_;
+    QString latestUpdaterVersion_;
     DownloadState state_;
     std::unique_ptr<QTemporaryDir> temp_dir_;
 

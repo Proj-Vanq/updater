@@ -30,11 +30,11 @@ Item {
                         newsObj = JSON.parse(news.responseText);
                     } catch (error) {
                         console.log("failed to parse posts json with error: " + error.name);
-                        console.log("message: " + error.message);
+                        console.log("json parse error message: " + error.message);
                     }
                 } else {
                     console.log("failed to fetch posts json with code: " + news.status);
-                    console.log("status: " + news.statusText);
+                    console.log("XHR status: " + news.statusText);
                 }
 
                 if (newsObj === null) {
@@ -94,7 +94,7 @@ Item {
         }
 
         Component.onCompleted: {
-            fetchNews('http://www.unvanquished.net/?json=get_recent_posts');
+            fetchNews('https://unvanquished.net/api/get_recent_posts/');
         }
     }
 
@@ -136,6 +136,8 @@ Item {
 
         iconName: "navigation/chevron_left"
         onClicked: swipe.decrementCurrentIndex()
+        enabled: swipe.currentIndex > 0
+        opacity: enabled ? 1 : 0.38
     }
 
     ActionButton {
@@ -149,5 +151,7 @@ Item {
 
         iconName: "navigation/chevron_right"
         onClicked: swipe.incrementCurrentIndex()
+        enabled: swipe.currentIndex + 1 < swipe.count
+        opacity: enabled ? 1 : 0.38
     }
 }

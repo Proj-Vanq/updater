@@ -1,4 +1,5 @@
 #include "settings.h"
+#include <QRandomGenerator>
 #include "system.h"
 
 const char kDefaultCommand[] = "%command%";
@@ -24,15 +25,7 @@ QString Settings::currentVersion() const {
     return settings_->value(Settings::CURRENT_VERSION).toString();
 }
 
-bool Settings::installFinished() const {
-    return settings_->value(Settings::INSTALL_FINISHED, false).toBool();
-}
-
 void Settings::setInstallPath(const QString& installPath) {
-    // If we changed the download path, make sure we don't start the game.
-    if (installPath != this->installPath()) {
-        setInstallFinished(false);
-    }
     settings_->setValue(Settings::INSTALL_PATH, installPath);
     emit installPathChanged(installPath);
 }
@@ -47,9 +40,17 @@ void Settings::setCurrentVersion(const QString& currentVersion) {
     emit currentVersionChanged(currentVersion);
 }
 
-void Settings::setInstallFinished(bool installFinished) {
-    settings_->setValue(Settings::INSTALL_FINISHED, installFinished);
-    emit installFinishedChanged(installFinished);
+void Settings::sync()
+{
+    settings_->sync();
 }
 
-
+// This is a hack to detect whether the program is running as administrator on Windows,
+// by testing whether it can write in HKEY_LOCAL_MACHINE in the registry
+QSettings::Status Settings::testWrite()
+{
+    QString randomData = QString::number(QRandomGenerator::global()->generate64());
+    settings_->setValue(WRITE_PROBE, randomData);
+    sync();
+    return settings_->status();
+}
